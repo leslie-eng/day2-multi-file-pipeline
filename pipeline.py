@@ -38,7 +38,7 @@ def discover_files( folder: Path, pattern: str = "transactions_*.csv") -> list[P
         return []
 
     return sorted(folder.glob(pattern))
-data_files = discover_files(RAW, pattern="transactions_*.csv")
+#data_files = discover_files(RAW, pattern="transactions_*.csv")
 
 
 def read_transactions(path: Path) -> tuple[list[str], list[dict]]:
@@ -66,14 +66,14 @@ def read_transactions(path: Path) -> tuple[list[str], list[dict]]:
             rows.append(row)
 
     return header, rows
-header = read_transactions(path=data_files[0])[0]
+#header = read_transactions(path=data_files[0])[0]
 
 
 def validate_columns(header: list[str], required: set[str] = REQUIRED_COLUMNS) -> set[str]:
     """Return the set of required columns missing from the header (empty set means valid)."""
     return required - set(header)
 
-print(validate_columns(header=header))
+#print(validate_columns(header=header))
 
 
 def find_problems(row: dict, seen_ids: set[str]) -> list[str]:
@@ -82,37 +82,43 @@ def find_problems(row: dict, seen_ids: set[str]) -> list[str]:
     Must cover: blank required values, non-numeric or non-positive quantity/price,
     and transaction IDs already seen in this run.
     """
-    """Return validation errors for a transaction."""
     problems = []
 
-    # Check required fields.
+    # step 1: check every required column has a value
     for column in REQUIRED_COLUMNS:
         value = row.get(column)
 
-        if value is None or not str(value).strip():
-            problems.append(f"Missing required value: {column}")
+        if value is None:
+            problems.append("Missing required value: " + column)
+        elif str(value).strip() == "":
+            problems.append("Missing required value: " + column)
 
-    # Validate quantity.
+    # step 2: check quantity is a number and greater than 0
+    qty_text = str(row.get("quantity", "")).strip()
+
     try:
-        quantity = float(str(row.get("quantity", "")).strip())
-        if quantity <= 0:
+        qty = int(qty_text)
+        if qty <= 0:
             problems.append("Quantity must be greater than zero")
-    except (ValueError, TypeError):
+    except ValueError:
         problems.append("Quantity must be numeric")
 
-    # Validate unit price.
+    # step 3: check unit price is a number and greater than 0
+    price_text = str(row.get("unit_price", "")).strip()
+
     try:
-        price = float(str(row.get("unit_price", "")).strip())
+        price = int(price_text)
         if price <= 0:
             problems.append("Unit price must be greater than zero")
-    except (ValueError, TypeError):
+    except ValueError:
         problems.append("Unit price must be numeric")
 
-    # Validate uniqueness of transaction IDs.
-    transaction_id = str(row.get("transaction_id", "")).strip()
+    # step 4: check for duplicate transaction id
+    # seen_ids is a set so the lookup is O(1)
+    tid = str(row.get("transaction_id", "")).strip()
 
-    if transaction_id:
-        if transaction_id in seen_ids:
+    if tid != "":
+        if tid in seen_ids:
             problems.append("Duplicate transaction ID")
 
     return problems
@@ -131,11 +137,7 @@ def clean_row(row: dict) -> dict:
     return cleaned
 
 
-def write_csv(
-    rows: list[dict],
-    path: Path,
-    fieldnames: list[str],
-) -> None:
+def write_csv(rows: list[dict], path: Path, fieldnames: list[str],) -> None:
     """Write CSV rows, creating parent folders as necessary."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
