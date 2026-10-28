@@ -8,6 +8,7 @@ import csv
 import logging
 from pathlib import Path
 import argparse
+import math
 
 import pandas as pd
 
@@ -114,12 +115,12 @@ def find_problems(row: dict, seen_ids: set[str]) -> list[str]:
         problems.append("Unit price must be numeric")
 
     # step 4: check for duplicate transaction id
-    # seen_ids is a set so the lookup is O(1)
     tid = str(row.get("transaction_id", "")).strip()
 
     if tid != "":
         if tid in seen_ids:
             problems.append("Duplicate transaction ID")
+            
 
     return problems
 
@@ -167,8 +168,11 @@ def build_summary(stats: dict) -> str:
 
 def run_pipeline(input_dir: Path, output_dir: Path) -> dict:
     """Discover, validate, clean, consolidate, and report."""
+
+    # step 1: find all the csv files
     files = discover_files(input_dir)
 
+    # counters that go into the summary at the end
     stats = {
         "files_discovered": len(files),
         "files_processed": 0,
@@ -180,14 +184,19 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> dict:
 
     valid_rows = []
     rejected_rows = []
+
+    # one set for the whole run so duplicate ids across files are caught
     seen_ids = set()
 
     output_columns = sorted(REQUIRED_COLUMNS)
 
-    if not files:
+    if len(files) == 0:
         logger.warning("No transaction CSV files found in %s", input_dir)
 
+    # step 2: go through each file
     for path in files:
+
+        # try to read the file, skip it if something goes wrong
         try:
             header, rows = read_transactions(path)
         except (OSError, csv.Error, UnicodeError, ValueError) as error:
@@ -197,82 +206,66 @@ def run_pipeline(input_dir: Path, output_dir: Path) -> dict:
 
         stats["rows_read"] += len(rows)
 
+        # check the file has all the columns we need
         missing_columns = validate_columns(header)
 
-        if missing_columns:
-            logger.error(
-                "Skipping %s: missing columns: %s",
-                path.name,
-                ", ".join(sorted(missing_columns)),
-            )
-
+        if len(missing_columns) > 0:
+            missing_text = ", ".join(sorted(missing_columns))
+            logger.error("Skipping %s: missing columns: %s", path.name, missing_text)
             stats["files_rejected"] += 1
 
+            # every row in this file goes to the rejected list
             for row in rows:
-                rejected_rows.append({
-                    **row,
-                    "_rejection_reason": (
-                        "Missing required columns: "
-                        + ", ".join(sorted(missing_columns))
-                    ),
-                })
+                rejected_row = dict(row)
+                rejected_row["_rejection_reason"] = "Missing required columns: " + missing_text
+                rejected_rows.append(rejected_row)
 
             continue
 
         stats["files_processed"] += 1
 
+        # step 3: check each row in the file
         for row in rows:
             problems = find_problems(row, seen_ids)
 
-            if problems:
-                rejected_rows.append({
-                    **row,
-                    "_rejection_reason": "; ".join(problems),
-                })
+            # if there are any problems, reject the row
+            if len(problems) > 0:
+                rejected_row = dict(row)
+                rejected_row["_rejection_reason"] = "; ".join(problems)
+                rejected_rows.append(rejected_row)
                 continue
 
-            # Mark an ID as seen only after the row passes validation.
+            # only add the id to seen_ids after the row passes validation
             transaction_id = row["transaction_id"].strip()
             seen_ids.add(transaction_id)
 
             cleaned = clean_row(row)
 
-            valid_rows.append({
-                **{
-                    column: cleaned[column]
-                    for column in sorted(REQUIRED_COLUMNS)
-                },
-                "_source_file": cleaned["_source_file"],
-            })
+            # build the final row with only the columns we want
+            valid_row = {}
+            for column in output_columns:
+                valid_row[column] = cleaned[column]
+            valid_row["_source_file"] = cleaned["_source_file"]
 
+            valid_rows.append(valid_row)
+
+    # step 4: update the counts
     stats["valid_transactions"] = len(valid_rows)
     stats["rejected_transactions"] = len(rejected_rows)
 
+    # step 5: write the output files
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    write_csv(
-        valid_rows,
-        output_dir / "consolidated_transactions.csv",
-        output_columns + ["_source_file"],
-    )
+    valid_columns = output_columns + ["_source_file"]
+    rejected_columns = output_columns + ["_source_file", "_rejection_reason"]
 
-    rejected_columns = output_columns + [
-        "_source_file",
-        "_rejection_reason",
-    ]
-
-    write_csv(
-        rejected_rows,
-        output_dir / "rejected_transactions.csv",
-        rejected_columns,
-    )
+    write_csv(valid_rows, output_dir / "consolidated_transactions.csv", valid_columns)
+    write_csv(rejected_rows, output_dir / "rejected_transactions.csv", rejected_columns)
 
     summary = build_summary(stats)
 
-    (output_dir / "summary.txt").write_text(
-        summary,
-        encoding="utf-8",
-    )
+    summary_path = output_dir / "summary.txt"
+    summary_path.write_text(summary, encoding="utf-8")
 
     logger.info("\n%s", summary)
 
