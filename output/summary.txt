@@ -1,0 +1,8 @@
+MULTI-FILE TRANSACTION PIPELINE SUMMARY
+=======================================
+Files discovered: 3
+Files processed: 2
+Files rejected: 1
+Rows read: 43
+Valid transactions: 24
+Rejected transactions: 19
