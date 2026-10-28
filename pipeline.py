@@ -7,6 +7,7 @@ Usage (suggested):  python pipeline.py --input data/ --output output/
 import csv
 import logging
 from pathlib import Path
+import argparse
 
 import pandas as pd
 
@@ -81,30 +82,224 @@ def find_problems(row: dict, seen_ids: set[str]) -> list[str]:
     Must cover: blank required values, non-numeric or non-positive quantity/price,
     and transaction IDs already seen in this run.
     """
-    raise NotImplementedError
+    """Return validation errors for a transaction."""
+    problems = []
+
+    # Check required fields.
+    for column in REQUIRED_COLUMNS:
+        value = row.get(column)
+
+        if value is None or not str(value).strip():
+            problems.append(f"Missing required value: {column}")
+
+    # Validate quantity.
+    try:
+        quantity = float(str(row.get("quantity", "")).strip())
+        if quantity <= 0:
+            problems.append("Quantity must be greater than zero")
+    except (ValueError, TypeError):
+        problems.append("Quantity must be numeric")
+
+    # Validate unit price.
+    try:
+        price = float(str(row.get("unit_price", "")).strip())
+        if price <= 0:
+            problems.append("Unit price must be greater than zero")
+    except (ValueError, TypeError):
+        problems.append("Unit price must be numeric")
+
+    # Validate uniqueness of transaction IDs.
+    transaction_id = str(row.get("transaction_id", "")).strip()
+
+    if transaction_id:
+        if transaction_id in seen_ids:
+            problems.append("Duplicate transaction ID")
+
+    return problems
 
 
 def clean_row(row: dict) -> dict:
-    """Return a normalised copy of a valid row (types converted, whitespace stripped)."""
-    raise NotImplementedError
+    """Strip whitespace and convert numeric fields."""
+    cleaned = {
+        key: value.strip() if isinstance(value, str) else value
+        for key, value in row.items()
+    }
+
+    cleaned["quantity"] = float(cleaned["quantity"])
+    cleaned["unit_price"] = float(cleaned["unit_price"])
+
+    return cleaned
 
 
-def write_csv(rows: list[dict], path: Path, fieldnames: list[str]) -> None:
-    """Write rows to CSV, creating parent folders as needed."""
-    raise NotImplementedError
+def write_csv(
+    rows: list[dict],
+    path: Path,
+    fieldnames: list[str],
+) -> None:
+    """Write CSV rows, creating parent folders as necessary."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    with path.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def build_summary(stats: dict) -> str:
-    """Format the processing summary shown in the expected-output resource."""
-    raise NotImplementedError
+    """Format a readable processing summary."""
+    return (
+        "MULTI-FILE TRANSACTION PIPELINE SUMMARY\n"
+        "=======================================\n"
+        f"Files discovered: {stats['files_discovered']}\n"
+        f"Files processed: {stats['files_processed']}\n"
+        f"Files rejected: {stats['files_rejected']}\n"
+        f"Rows read: {stats['rows_read']}\n"
+        f"Valid transactions: {stats['valid_transactions']}\n"
+        f"Rejected transactions: {stats['rejected_transactions']}\n"
+    )
 
 
 def run_pipeline(input_dir: Path, output_dir: Path) -> dict:
-    """Run every step and return the statistics used by build_summary()."""
-    # TODO
-    pass
+    """Discover, validate, clean, consolidate, and report."""
+    files = discover_files(input_dir)
+
+    stats = {
+        "files_discovered": len(files),
+        "files_processed": 0,
+        "files_rejected": 0,
+        "rows_read": 0,
+        "valid_transactions": 0,
+        "rejected_transactions": 0,
+    }
+
+    valid_rows = []
+    rejected_rows = []
+    seen_ids = set()
+
+    output_columns = sorted(REQUIRED_COLUMNS)
+
+    if not files:
+        logger.warning("No transaction CSV files found in %s", input_dir)
+
+    for path in files:
+        try:
+            header, rows = read_transactions(path)
+        except (OSError, csv.Error, UnicodeError, ValueError) as error:
+            logger.error("Could not read %s: %s", path.name, error)
+            stats["files_rejected"] += 1
+            continue
+
+        stats["rows_read"] += len(rows)
+
+        missing_columns = validate_columns(header)
+
+        if missing_columns:
+            logger.error(
+                "Skipping %s: missing columns: %s",
+                path.name,
+                ", ".join(sorted(missing_columns)),
+            )
+
+            stats["files_rejected"] += 1
+
+            for row in rows:
+                rejected_rows.append({
+                    **row,
+                    "_rejection_reason": (
+                        "Missing required columns: "
+                        + ", ".join(sorted(missing_columns))
+                    ),
+                })
+
+            continue
+
+        stats["files_processed"] += 1
+
+        for row in rows:
+            problems = find_problems(row, seen_ids)
+
+            if problems:
+                rejected_rows.append({
+                    **row,
+                    "_rejection_reason": "; ".join(problems),
+                })
+                continue
+
+            # Mark an ID as seen only after the row passes validation.
+            transaction_id = row["transaction_id"].strip()
+            seen_ids.add(transaction_id)
+
+            cleaned = clean_row(row)
+
+            valid_rows.append({
+                **{
+                    column: cleaned[column]
+                    for column in sorted(REQUIRED_COLUMNS)
+                },
+                "_source_file": cleaned["_source_file"],
+            })
+
+    stats["valid_transactions"] = len(valid_rows)
+    stats["rejected_transactions"] = len(rejected_rows)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    write_csv(
+        valid_rows,
+        output_dir / "consolidated_transactions.csv",
+        output_columns + ["_source_file"],
+    )
+
+    rejected_columns = output_columns + [
+        "_source_file",
+        "_rejection_reason",
+    ]
+
+    write_csv(
+        rejected_rows,
+        output_dir / "rejected_transactions.csv",
+        rejected_columns,
+    )
+
+    summary = build_summary(stats)
+
+    (output_dir / "summary.txt").write_text(
+        summary,
+        encoding="utf-8",
+    )
+
+    logger.info("\n%s", summary)
+
+    return stats
 
 
 if __name__ == "__main__":
-    # TODO: parse arguments, call run_pipeline, print the summary
-    pass
+    parser = argparse.ArgumentParser(
+        description="Multi-file transaction processing pipeline"
+    )
+
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data"),
+        help="Directory containing transaction CSV files",
+    )
+
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("output"),
+        help="Directory for pipeline output files",
+    )
+
+    args = parser.parse_args()
+
+    try:
+        run_pipeline(args.input, args.output)
+    except (OSError, ValueError) as error:
+        logger.error("Pipeline failed: %s", error)
+        raise SystemExit(1)
