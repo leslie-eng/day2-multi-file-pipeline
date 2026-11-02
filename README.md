@@ -8,8 +8,9 @@ A Python data-engineering pipeline that processes daily Soko Fresh supermarket t
 - Validates required columns before processing each file
 - Removes files with missing required columns from normal processing and reports their rows as rejected
 - Checks required values, numeric quantity and unit price, positive values, and duplicate transaction IDs across a run
+- Normalizes the known `qty` header alias to `quantity`
 - Writes cleaned accepted transactions and rejected rows to separate CSV files
-- Generates a text summary with discovered, processed, rejected, read, accepted, and rejected row counts
+- Generates a text summary with processing counts, rejection reason counts, and total revenue
 
 ## Pipeline Workflow
 
@@ -69,9 +70,9 @@ Each run produces:
 
 | Output | Description |
 |---|---|
-| `output/consolidated_transactions.csv` | Valid, cleaned transactions |
-| `output/rejected_transactions.csv` | Rejected rows and their rejection reasons |
-| `output/summary.txt` | Counts for files and transactions processed |
+| `output/consolidated_transactions.csv` | Valid, cleaned transactions in the documented schema |
+| `output/rejected_transactions.csv` | Rejected-row metadata beginning with `payment_ref` and `source_file` |
+| `output/summary.txt` | Processing counts, rejection reason counts, and total revenue |
 
 ## Input Schema
 
@@ -86,7 +87,9 @@ Every transaction file must contain these required columns:
 - `unit_price`
 - `payment_method`
 
-Additional columns are accepted. The pipeline attaches `_source_file` to each row so the originating CSV remains traceable.
+Additional columns are accepted. The pipeline attaches `source_file` to accepted rows so the originating CSV remains traceable.
+
+The input alias `qty` is mapped to the canonical `quantity` column. All other columns must match the canonical names; unknown aliases are not inferred.
 
 ## Validation Rules
 

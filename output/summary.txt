@@ -1,8 +1,19 @@
 MULTI-FILE TRANSACTION PIPELINE SUMMARY
 =======================================
 Files discovered: 3
-Files processed: 2
-Files rejected: 1
+Files processed: 3
+Files rejected: 0
 Rows read: 43
-Valid transactions: 24
-Rejected transactions: 19
+Valid transactions: 34
+Rejected transactions: 9
+Total revenue: 22775.00
+
+REJECTION REASONS
+=================
+Duplicate transaction ID: 3
+Missing required value: branch: 1
+Missing required value: customer_id: 1
+Missing required value: quantity: 1
+Missing required value: unit_price: 1
+Quantity must be greater than zero: 1
+Quantity must be numeric: 1
